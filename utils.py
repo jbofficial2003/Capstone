@@ -7,9 +7,18 @@ from sklearn.preprocessing import LabelEncoder, StandardScaler
 import torch
 
 
+ALLOWED_LABELS = ("backdoor", "ddos", "injection", "normal", "password")
+
+
 def get_dataset_csv_files(data_dir="data"):
     pattern = os.path.join(data_dir, "*.csv")
     return sorted(glob(pattern))
+
+
+def _filter_allowed_labels(series):
+    allowed = {label.lower() for label in ALLOWED_LABELS}
+    normalized = series.astype(str).str.strip().str.lower()
+    return normalized[normalized.isin(allowed)]
 
 
 def build_global_type_mapping(files):
@@ -19,7 +28,7 @@ def build_global_type_mapping(files):
         df.columns = df.columns.str.strip()
         if "type" not in df.columns:
             continue
-        values = df["type"].astype(str).str.strip().tolist()
+        values = _filter_allowed_labels(df["type"]).tolist()
         labels.update(values)
 
     ordered_labels = sorted(labels)
@@ -75,6 +84,12 @@ def load_dataset_data(file, label_mapping=None, val_ratio=0.2, seed=42):
 
     if "type" not in df.columns:
         raise ValueError(f"Missing required 'type' column in dataset: {file}")
+
+    df["type"] = _filter_allowed_labels(df["type"])
+    df = df.dropna(subset=["type"])
+
+    if df.empty:
+        raise ValueError(f"No rows remain after filtering to allowed labels in dataset: {file}")
 
     if "time" in df.columns:
         time_series = pd.to_datetime(df["time"], format="%H:%M:%S", errors="coerce")
