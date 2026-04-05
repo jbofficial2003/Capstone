@@ -1,0 +1,22 @@
+{
+  "label_to_index": {
+    "backdoor": 0,
+    "ddos": 1,
+    "injection": 2,
+    "normal": 3,
+    "password": 4,
+    "ransomware": 5,
+    "scanning": 6,
+    "xss": 7
+  },
+  "index_to_label": {
+    "0": "backdoor",
+    "1": "ddos",
+    "2": "injection",
+    "3": "normal",
+    "4": "password",
+    "5": "ransomware",
+    "6": "scanning",
+    "7": "xss"
+  }
+}
