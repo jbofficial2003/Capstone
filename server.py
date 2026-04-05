@@ -1,6 +1,7 @@
 import flwr as fl
 import csv
 import os
+import logging
 
 
 round_state = {"eval_round": 0}
@@ -8,6 +9,14 @@ RESULTS_DIR = "results"
 SERVER_METRICS_FILE = os.path.join(RESULTS_DIR, "server_metrics.csv")
 METRIC_KEYS = ("accuracy", "precision", "recall", "f1")
 ATTACK_METRIC_KEYS = ("attack_accuracy", "attack_precision", "attack_recall", "attack_f1")
+
+
+class _SuppressFlowerDeprecations(logging.Filter):
+    def filter(self, record):
+        return "DEPRECATED FEATURE" not in record.getMessage()
+
+
+logging.getLogger("flwr").addFilter(_SuppressFlowerDeprecations())
 
 
 def append_server_metrics(round_number, client_count, sample_count, aggregated_metrics):

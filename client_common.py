@@ -1,6 +1,7 @@
 import csv
 import json
 import os
+import logging
 from pathlib import Path
 
 import flwr as fl
@@ -18,6 +19,14 @@ from utils import (
 
 
 RESULTS_DIR = "results"
+
+
+class _SuppressFlowerDeprecations(logging.Filter):
+    def filter(self, record):
+        return "DEPRECATED FEATURE" not in record.getMessage()
+
+
+logging.getLogger("flwr").addFilter(_SuppressFlowerDeprecations())
 
 
 def _append_client_predictions(
