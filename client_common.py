@@ -181,7 +181,7 @@ def run_dataset_client(dataset_file, client_name=None, server_address="localhost
             optimizer = torch.optim.Adam(model.parameters())
             loss_fn = torch.nn.CrossEntropyLoss()
 
-            for _ in range(2):
+            for _ in range(10):
                 optimizer.zero_grad()
                 output = model(X_train)
                 loss = loss_fn(output, y_train)
