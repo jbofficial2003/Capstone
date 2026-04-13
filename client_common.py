@@ -7,6 +7,7 @@ from pathlib import Path
 import flwr as fl
 import torch
 from sklearn.metrics import accuracy_score, confusion_matrix, precision_recall_fscore_support
+from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 
 from model import SharedModel
 from utils import (
@@ -156,6 +157,27 @@ def run_dataset_client(dataset_file, client_name=None, server_address="localhost
     index_to_label = {idx: label for label, idx in label_mapping.items()}
     eval_state = {"round": 0}
 
+    # Give more importance to rare classes while avoiding extreme class overcorrection.
+    class_counts = torch.bincount(y_train, minlength=num_classes).float()
+    class_weights = torch.ones(num_classes, dtype=torch.float32)
+    non_zero = class_counts > 0
+    inverse_freq = class_counts.sum() / (class_counts[non_zero] * non_zero.sum())
+    class_weights[non_zero] = torch.sqrt(inverse_freq)
+    class_weights = class_weights / class_weights.mean()
+
+    sample_weights = class_weights[y_train]
+    train_dataset = TensorDataset(X_train, y_train)
+    train_sampler = WeightedRandomSampler(
+        weights=sample_weights,
+        num_samples=len(sample_weights),
+        replacement=True,
+    )
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=min(256, len(train_dataset)),
+        sampler=train_sampler,
+    )
+
     class DatasetClient(fl.client.NumPyClient):
         def get_parameters(self, config):
             return [val.detach().cpu().numpy() for val in model.shared.state_dict().values()]
@@ -179,14 +201,59 @@ def run_dataset_client(dataset_file, client_name=None, server_address="localhost
             model.train()
 
             optimizer = torch.optim.Adam(model.parameters())
-            loss_fn = torch.nn.CrossEntropyLoss()
+            loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
 
-            for _ in range(10):
-                optimizer.zero_grad()
-                output = model(X_train)
-                loss = loss_fn(output, y_train)
-                loss.backward()
-                optimizer.step()
+            best_state = None
+            best_score = float("-inf")
+
+            def _attack_focus_score():
+                model.eval()
+                with torch.no_grad():
+                    val_logits = model(X_val)
+                    val_preds = torch.argmax(val_logits, dim=1).cpu().numpy()
+                    val_true = y_val.cpu().numpy()
+
+                    _, _, weighted_f1, _ = precision_recall_fscore_support(
+                        val_true,
+                        val_preds,
+                        average="weighted",
+                        zero_division=0,
+                    )
+
+                    if normal_class_idx is None:
+                        score = float(weighted_f1)
+                    else:
+                        val_true_attack = (val_true != normal_class_idx).astype(int)
+                        val_pred_attack = (val_preds != normal_class_idx).astype(int)
+                        _, _, attack_f1, _ = precision_recall_fscore_support(
+                            val_true_attack,
+                            val_pred_attack,
+                            average="binary",
+                            zero_division=0,
+                        )
+                        score = float(0.5 * attack_f1 + 0.5 * weighted_f1)
+
+                model.train()
+                return score
+
+            for _ in range(2):
+                for xb, yb in train_loader:
+                    optimizer.zero_grad()
+                    output = model(xb)
+                    loss = loss_fn(output, yb)
+                    loss.backward()
+                    optimizer.step()
+
+                epoch_score = _attack_focus_score()
+                if epoch_score > best_score:
+                    best_score = epoch_score
+                    best_state = {
+                        key: value.detach().clone()
+                        for key, value in model.state_dict().items()
+                    }
+
+            if best_state is not None:
+                model.load_state_dict(best_state, strict=True)
 
             return self.get_parameters(config), len(X_train), {}
 

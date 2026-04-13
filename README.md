@@ -72,6 +72,11 @@ Each dataset is a separate federated client:
 - `thermostat.csv` → `client_thermostat.py`
 - `weather.csv` → `client_weather.py`
 
+### Time-Series Handling
+- CSV rows are ordered by `date` and `time` before training.
+- The loader adds lagged feature windows so each sample includes recent history from prior rows.
+- Train/validation splitting is chronological when timestamps are available, which avoids leaking future rows into training.
+
 ## Output Files
 
 After training completes, check the `results/` folder:
