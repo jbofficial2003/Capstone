@@ -7,9 +7,9 @@ from pathlib import Path
 import flwr as fl
 import torch
 from sklearn.metrics import accuracy_score, confusion_matrix, precision_recall_fscore_support
-from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
+from torch.utils.data import DataLoader, TensorDataset
 
-from model import SharedModel
+from model_cnn import SharedModel
 from utils import (
     build_global_type_mapping,
     get_dataset_csv_files,
@@ -157,25 +157,21 @@ def run_dataset_client(dataset_file, client_name=None, server_address="localhost
     index_to_label = {idx: label for label, idx in label_mapping.items()}
     eval_state = {"round": 0}
 
-    # Give more importance to rare classes while avoiding extreme class overcorrection.
+    # Moderate-to-strong class weighting for balanced accuracy and attack detection.
+    # For 86/14 split: normal class gets ~0.6x weight, attack classes get ~2.5-3.5x weight.
     class_counts = torch.bincount(y_train, minlength=num_classes).float()
     class_weights = torch.ones(num_classes, dtype=torch.float32)
     non_zero = class_counts > 0
     inverse_freq = class_counts.sum() / (class_counts[non_zero] * non_zero.sum())
-    class_weights[non_zero] = torch.sqrt(inverse_freq)
+    # Use 0.7 power of inverse frequency for stronger weighting
+    class_weights[non_zero] = torch.pow(inverse_freq, 0.7)
     class_weights = class_weights / class_weights.mean()
 
-    sample_weights = class_weights[y_train]
     train_dataset = TensorDataset(X_train, y_train)
-    train_sampler = WeightedRandomSampler(
-        weights=sample_weights,
-        num_samples=len(sample_weights),
-        replacement=True,
-    )
     train_loader = DataLoader(
         train_dataset,
         batch_size=min(256, len(train_dataset)),
-        sampler=train_sampler,
+        shuffle=True,
     )
 
     class DatasetClient(fl.client.NumPyClient):
@@ -206,13 +202,14 @@ def run_dataset_client(dataset_file, client_name=None, server_address="localhost
             best_state = None
             best_score = float("-inf")
 
-            def _attack_focus_score():
+            def _model_selection_score():
                 model.eval()
                 with torch.no_grad():
                     val_logits = model(X_val)
                     val_preds = torch.argmax(val_logits, dim=1).cpu().numpy()
                     val_true = y_val.cpu().numpy()
 
+                    accuracy = accuracy_score(val_true, val_preds)
                     _, _, weighted_f1, _ = precision_recall_fscore_support(
                         val_true,
                         val_preds,
@@ -221,8 +218,11 @@ def run_dataset_client(dataset_file, client_name=None, server_address="localhost
                     )
 
                     if normal_class_idx is None:
+                        # No binary attack metric: use weighted F1 alone
                         score = float(weighted_f1)
                     else:
+                        # Increase focus on attack detection while maintaining multiclass quality.
+                        # Weighted F1 keeps all classes in mind; binary attack F1 ensures attacks are detected.
                         val_true_attack = (val_true != normal_class_idx).astype(int)
                         val_pred_attack = (val_preds != normal_class_idx).astype(int)
                         _, _, attack_f1, _ = precision_recall_fscore_support(
@@ -231,7 +231,8 @@ def run_dataset_client(dataset_file, client_name=None, server_address="localhost
                             average="binary",
                             zero_division=0,
                         )
-                        score = float(0.5 * attack_f1 + 0.5 * weighted_f1)
+                        # Balanced score: 50% multiclass quality, 50% attack detection for better security.
+                        score = float(0.5 * weighted_f1 + 0.5 * attack_f1)
 
                 model.train()
                 return score
@@ -244,7 +245,7 @@ def run_dataset_client(dataset_file, client_name=None, server_address="localhost
                     loss.backward()
                     optimizer.step()
 
-                epoch_score = _attack_focus_score()
+                epoch_score = _model_selection_score()
                 if epoch_score > best_score:
                     best_score = epoch_score
                     best_state = {

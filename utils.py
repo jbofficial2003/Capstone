@@ -4,6 +4,7 @@ from glob import glob
 
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.model_selection import train_test_split
 import torch
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -96,22 +97,36 @@ def save_label_mapping(output_file, label_mapping):
 
 
 def _train_val_split(X, y, val_ratio=0.2, seed=42, shuffle=True):
+    """Stratified train/val split preserving class distribution.
+    Critical for imbalanced data (e.g., 90/10 splits).
+    """
+    if shuffle:
+        # Use stratified split to preserve class distribution
+        # Convert to numpy for sklearn compatibility
+        X_np = X.cpu().numpy() if isinstance(X, torch.Tensor) else X.numpy()
+        y_np = y.cpu().numpy() if isinstance(y, torch.Tensor) else y.numpy()
+        
+        X_train_np, X_val_np, y_train_np, y_val_np = train_test_split(
+            X_np, y_np,
+            test_size=val_ratio,
+            random_state=seed,
+            stratify=y_np  # Preserve class distribution
+        )
+        
+        # Convert back to tensors
+        X_train = torch.tensor(X_train_np, dtype=torch.float32)
+        X_val = torch.tensor(X_val_np, dtype=torch.float32)
+        y_train = torch.tensor(y_train_np, dtype=torch.long)
+        y_val = torch.tensor(y_val_np, dtype=torch.long)
+        
+        return X_train, y_train, X_val, y_val
+    
+    # Non-shuffled chronological split (original behavior)
     n_samples = X.shape[0]
     val_size = max(1, int(n_samples * val_ratio)) if n_samples > 1 else 0
 
     if val_size == 0:
         return X, y, X, y
-
-    if shuffle:
-        generator = torch.Generator().manual_seed(seed)
-        indices = torch.randperm(n_samples, generator=generator)
-        val_idx = indices[:val_size]
-        train_idx = indices[val_size:]
-
-        if train_idx.numel() == 0:
-            train_idx = val_idx
-
-        return X[train_idx], y[train_idx], X[val_idx], y[val_idx]
 
     train_size = n_samples - val_size
     if train_size <= 0:
@@ -195,7 +210,8 @@ def load_dataset_data(file, label_mapping=None, val_ratio=0.2, seed=42):
         y_tensor,
         val_ratio=val_ratio,
         seed=seed,
-        shuffle=timestamp is None,
+        # Accuracy-first setting: use random split for better class mixing.
+        shuffle=True,
     )
 
     scaler = StandardScaler()
