@@ -127,7 +127,7 @@ Ensure all CSV files are in the `data/` folder with required columns:
 - Feature columns (numeric or categorical, will be auto-encoded)
 
 ### Slow training
-Reduce number of local epochs in `client_common.py` line `for _ in range(2):` to `for _ in range(1):`.
+Reduce `LOCAL_EPOCHS` in `client_common.py` if you want faster runs.
 
 ## File Structure
 

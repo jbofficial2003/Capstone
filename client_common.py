@@ -9,7 +9,7 @@ import torch
 from sklearn.metrics import accuracy_score, confusion_matrix, precision_recall_fscore_support
 from torch.utils.data import DataLoader, TensorDataset
 
-from model_cnn import SharedModel
+from model import SharedModel
 from utils import (
     build_global_type_mapping,
     get_dataset_csv_files,
@@ -20,6 +20,8 @@ from utils import (
 
 
 RESULTS_DIR = "results"
+LOCAL_EPOCHS = 6
+LOCAL_LR = 3e-3
 
 
 class _SuppressFlowerDeprecations(logging.Filter):
@@ -157,16 +159,6 @@ def run_dataset_client(dataset_file, client_name=None, server_address="localhost
     index_to_label = {idx: label for label, idx in label_mapping.items()}
     eval_state = {"round": 0}
 
-    # Moderate-to-strong class weighting for balanced accuracy and attack detection.
-    # For 86/14 split: normal class gets ~0.6x weight, attack classes get ~2.5-3.5x weight.
-    class_counts = torch.bincount(y_train, minlength=num_classes).float()
-    class_weights = torch.ones(num_classes, dtype=torch.float32)
-    non_zero = class_counts > 0
-    inverse_freq = class_counts.sum() / (class_counts[non_zero] * non_zero.sum())
-    # Use 0.7 power of inverse frequency for stronger weighting
-    class_weights[non_zero] = torch.pow(inverse_freq, 0.7)
-    class_weights = class_weights / class_weights.mean()
-
     train_dataset = TensorDataset(X_train, y_train)
     train_loader = DataLoader(
         train_dataset,
@@ -196,8 +188,8 @@ def run_dataset_client(dataset_file, client_name=None, server_address="localhost
             self.set_parameters(parameters)
             model.train()
 
-            optimizer = torch.optim.Adam(model.parameters())
-            loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
+            optimizer = torch.optim.AdamW(model.parameters(), lr=LOCAL_LR, weight_decay=1e-4)
+            loss_fn = torch.nn.CrossEntropyLoss()
 
             best_state = None
             best_score = float("-inf")
@@ -210,34 +202,13 @@ def run_dataset_client(dataset_file, client_name=None, server_address="localhost
                     val_true = y_val.cpu().numpy()
 
                     accuracy = accuracy_score(val_true, val_preds)
-                    _, _, weighted_f1, _ = precision_recall_fscore_support(
-                        val_true,
-                        val_preds,
-                        average="weighted",
-                        zero_division=0,
-                    )
-
-                    if normal_class_idx is None:
-                        # No binary attack metric: use weighted F1 alone
-                        score = float(weighted_f1)
-                    else:
-                        # Increase focus on attack detection while maintaining multiclass quality.
-                        # Weighted F1 keeps all classes in mind; binary attack F1 ensures attacks are detected.
-                        val_true_attack = (val_true != normal_class_idx).astype(int)
-                        val_pred_attack = (val_preds != normal_class_idx).astype(int)
-                        _, _, attack_f1, _ = precision_recall_fscore_support(
-                            val_true_attack,
-                            val_pred_attack,
-                            average="binary",
-                            zero_division=0,
-                        )
-                        # Balanced score: 50% multiclass quality, 50% attack detection for better security.
-                        score = float(0.5 * weighted_f1 + 0.5 * attack_f1)
+                    # Optimize the local model for the metric the user asked for.
+                    score = float(accuracy)
 
                 model.train()
                 return score
 
-            for _ in range(2):
+            for _ in range(LOCAL_EPOCHS):
                 for xb, yb in train_loader:
                     optimizer.zero_grad()
                     output = model(xb)

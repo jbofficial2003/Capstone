@@ -5,41 +5,44 @@ class SharedModel(nn.Module):
     def __init__(self, input_size, num_classes):
         super(SharedModel, self).__init__()
 
-        # 🔹 Stronger Adapter (local)
+        # Adapter keeps client-specific feature shaping local.
         self.adapter = nn.Sequential(
-            nn.Linear(input_size, 64),
-            nn.BatchNorm1d(64),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-
-            nn.Linear(64, 32),
-            nn.BatchNorm1d(32),
-            nn.ReLU(),
-        )
-
-        # 🔹 Improved Shared Backbone (federated)
-        self.shared = nn.Sequential(
-            nn.Linear(32, 128),
-            nn.BatchNorm1d(128),
-            nn.ReLU(),
-            nn.Dropout(0.4),
+            nn.Linear(input_size, 128),
+            nn.LayerNorm(128),
+            nn.GELU(),
+            nn.Dropout(0.1),
 
             nn.Linear(128, 64),
-            nn.BatchNorm1d(64),
-            nn.ReLU(),
+            nn.LayerNorm(64),
+            nn.GELU(),
 
             nn.Linear(64, 32),
-            nn.ReLU(),
+            nn.GELU(),
         )
 
-        # 🔹 Stronger Personal Head (local)
+        # Shared backbone is kept normalization-stable for federated averaging.
+        self.shared = nn.Sequential(
+            nn.Linear(32, 64),
+            nn.LayerNorm(64),
+            nn.GELU(),
+            nn.Dropout(0.1),
+
+            nn.Linear(64, 64),
+            nn.LayerNorm(64),
+            nn.GELU(),
+
+            nn.Linear(64, 32),
+            nn.GELU(),
+        )
+
+        # Personal head stays local to each client.
         self.personal = nn.Sequential(
             nn.Linear(32, 32),
-            nn.ReLU(),
-            nn.Dropout(0.3),
+            nn.GELU(),
+            nn.Dropout(0.1),
 
             nn.Linear(32, 16),
-            nn.ReLU(),
+            nn.GELU(),
 
             nn.Linear(16, num_classes)
         )

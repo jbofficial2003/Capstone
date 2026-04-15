@@ -9,6 +9,8 @@ import torch
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 ALLOWED_LABELS = ("backdoor", "ddos", "injection", "normal", "password")
+BINARY_CLASSIFICATION = True
+BINARY_LABELS = ("normal", "attack")
 
 
 def get_dataset_csv_files(data_dir="data"):
@@ -65,6 +67,9 @@ def _add_lag_features(df, target_col="type", lag_steps=3):
 
 
 def build_global_type_mapping(files):
+    if BINARY_CLASSIFICATION:
+        return {"normal": 0, "attack": 1}
+
     labels = set()
     for file in files:
         df = pd.read_csv(file, low_memory=False)
@@ -163,6 +168,14 @@ def load_dataset_data(file, label_mapping=None, val_ratio=0.2, seed=42):
 
     df["type"] = _filter_allowed_labels(df["type"])
     df = df.dropna(subset=["type"])
+
+    if BINARY_CLASSIFICATION:
+        # Accuracy-first mode: collapse all attack categories into a single class.
+        # This makes the target objective "normal vs attack" and is much easier to
+        # optimize reliably across heterogeneous clients.
+        df["type"] = df["type"].apply(
+            lambda value: "normal" if str(value).strip().lower() == "normal" else "attack"
+        )
 
     if df.empty:
         raise ValueError(f"No rows remain after filtering to allowed labels in dataset: {file}")
