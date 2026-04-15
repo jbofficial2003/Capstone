@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 
 import flwr as fl
+import numpy as np
 import torch
 from sklearn.metrics import accuracy_score, confusion_matrix, precision_recall_fscore_support
 from torch.utils.data import DataLoader, TensorDataset
@@ -22,6 +23,74 @@ from utils import (
 RESULTS_DIR = "results"
 LOCAL_EPOCHS = 6
 LOCAL_LR = 3e-3
+TARGET_ACCURACY_FLOOR = 0.90
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def _predict_with_threshold(logits, normal_class_idx, threshold):
+    if normal_class_idx is None or logits.shape[1] != 2:
+        return torch.argmax(logits, dim=1)
+
+    attack_class_idx = 1 - int(normal_class_idx)
+    probs = torch.softmax(logits, dim=1)
+    attack_probs = probs[:, attack_class_idx]
+
+    preds = torch.full_like(torch.argmax(logits, dim=1), int(normal_class_idx))
+    preds = torch.where(
+        attack_probs >= float(threshold),
+        torch.full_like(preds, attack_class_idx),
+        preds,
+    )
+    return preds
+
+
+def _best_threshold_for_recall(logits, y_true, normal_class_idx, min_accuracy):
+    if normal_class_idx is None or logits.shape[1] != 2:
+        return 0.5
+
+    attack_class_idx = 1 - int(normal_class_idx)
+    attack_probs = torch.softmax(logits, dim=1)[:, attack_class_idx].detach().cpu().numpy()
+    y_true_np = y_true.detach().cpu().numpy()
+    y_true_attack = (y_true_np != int(normal_class_idx)).astype(int)
+
+    thresholds = np.linspace(0.05, 0.95, 19)
+    best_threshold = 0.5
+    best_recall = -1.0
+    best_accuracy = -1.0
+
+    fallback_threshold = 0.5
+    fallback_accuracy = -1.0
+    fallback_recall = -1.0
+
+    for threshold in thresholds:
+        y_pred_attack = (attack_probs >= threshold).astype(int)
+        accuracy = accuracy_score(y_true_attack, y_pred_attack)
+        _, recall, _, _ = precision_recall_fscore_support(
+            y_true_attack,
+            y_pred_attack,
+            average="binary",
+            zero_division=0,
+        )
+
+        if (
+            accuracy > fallback_accuracy
+            or (accuracy == fallback_accuracy and recall > fallback_recall)
+        ):
+            fallback_accuracy = float(accuracy)
+            fallback_recall = float(recall)
+            fallback_threshold = float(threshold)
+
+        if accuracy >= min_accuracy and (
+            recall > best_recall
+            or (recall == best_recall and accuracy > best_accuracy)
+        ):
+            best_recall = float(recall)
+            best_accuracy = float(accuracy)
+            best_threshold = float(threshold)
+
+    if best_recall >= 0.0:
+        return best_threshold
+    return fallback_threshold
 
 
 class _SuppressFlowerDeprecations(logging.Filter):
@@ -153,17 +222,29 @@ def run_dataset_client(dataset_file, client_name=None, server_address="localhost
         label_mapping=label_mapping,
     )
 
-    model = SharedModel(X_train.shape[1], num_classes)
+    model = SharedModel(X_train.shape[1], num_classes).to(DEVICE)
     metrics_file = os.path.join(RESULTS_DIR, f"{resolved_name}_metrics.csv")
     predictions_file = os.path.join(RESULTS_DIR, f"{resolved_name}_predictions.csv")
     index_to_label = {idx: label for label, idx in label_mapping.items()}
-    eval_state = {"round": 0}
+    eval_state = {"round": 0, "attack_threshold": 0.5}
+
+    X_val = X_val.to(DEVICE)
+    y_val = y_val.to(DEVICE)
+
+    class_counts = torch.bincount(y_train, minlength=num_classes).float()
+    non_zero = class_counts > 0
+    class_weights = torch.ones(num_classes, dtype=torch.float32)
+    if non_zero.any():
+        inv = class_counts.sum() / (class_counts[non_zero] * non_zero.sum())
+        class_weights[non_zero] = torch.pow(inv, 0.7)
+    class_weights = (class_weights / class_weights.mean()).to(DEVICE)
 
     train_dataset = TensorDataset(X_train, y_train)
     train_loader = DataLoader(
         train_dataset,
         batch_size=min(256, len(train_dataset)),
         shuffle=True,
+        pin_memory=torch.cuda.is_available(),
     )
 
     class DatasetClient(fl.client.NumPyClient):
@@ -189,36 +270,66 @@ def run_dataset_client(dataset_file, client_name=None, server_address="localhost
             model.train()
 
             optimizer = torch.optim.AdamW(model.parameters(), lr=LOCAL_LR, weight_decay=1e-4)
-            loss_fn = torch.nn.CrossEntropyLoss()
+            loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
+            min_accuracy = float(config.get("target_accuracy_floor", TARGET_ACCURACY_FLOOR))
 
             best_state = None
             best_score = float("-inf")
+            best_threshold = float(eval_state.get("attack_threshold", 0.5))
 
             def _model_selection_score():
                 model.eval()
                 with torch.no_grad():
                     val_logits = model(X_val)
-                    val_preds = torch.argmax(val_logits, dim=1).cpu().numpy()
+                    threshold = _best_threshold_for_recall(
+                        val_logits,
+                        y_val,
+                        normal_class_idx,
+                        min_accuracy,
+                    )
+                    val_preds = _predict_with_threshold(
+                        val_logits,
+                        normal_class_idx,
+                        threshold,
+                    ).cpu().numpy()
                     val_true = y_val.cpu().numpy()
 
                     accuracy = accuracy_score(val_true, val_preds)
-                    # Optimize the local model for the metric the user asked for.
-                    score = float(accuracy)
+                    if normal_class_idx is None:
+                        score = float(accuracy)
+                    else:
+                        val_true_attack = (val_true != normal_class_idx).astype(int)
+                        val_pred_attack = (val_preds != normal_class_idx).astype(int)
+                        _, attack_recall, _, _ = precision_recall_fscore_support(
+                            val_true_attack,
+                            val_pred_attack,
+                            average="binary",
+                            zero_division=0,
+                        )
+
+                        # Maximize attack recall while respecting the requested accuracy floor.
+                        if accuracy >= min_accuracy:
+                            score = float(attack_recall + 0.1 * accuracy)
+                        else:
+                            score = float(accuracy - 1.0)
 
                 model.train()
-                return score
+                return score, threshold
 
             for _ in range(LOCAL_EPOCHS):
                 for xb, yb in train_loader:
+                    xb = xb.to(DEVICE, non_blocking=torch.cuda.is_available())
+                    yb = yb.to(DEVICE, non_blocking=torch.cuda.is_available())
                     optimizer.zero_grad()
                     output = model(xb)
                     loss = loss_fn(output, yb)
                     loss.backward()
                     optimizer.step()
 
-                epoch_score = _model_selection_score()
+                epoch_score, epoch_threshold = _model_selection_score()
                 if epoch_score > best_score:
                     best_score = epoch_score
+                    best_threshold = float(epoch_threshold)
                     best_state = {
                         key: value.detach().clone()
                         for key, value in model.state_dict().items()
@@ -226,13 +337,14 @@ def run_dataset_client(dataset_file, client_name=None, server_address="localhost
 
             if best_state is not None:
                 model.load_state_dict(best_state, strict=True)
+                eval_state["attack_threshold"] = best_threshold
 
             return self.get_parameters(config), len(X_train), {}
 
         def evaluate(self, parameters, config):
             self.set_parameters(parameters)
             model.eval()
-            loss_fn = torch.nn.CrossEntropyLoss()
+            loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
 
             eval_state["round"] += 1
             round_number = int(config.get("server_round", eval_state["round"]))
@@ -240,7 +352,8 @@ def run_dataset_client(dataset_file, client_name=None, server_address="localhost
             with torch.no_grad():
                 output = model(X_val)
                 loss = loss_fn(output, y_val)
-                preds = torch.argmax(output, dim=1)
+                threshold = float(eval_state.get("attack_threshold", 0.5))
+                preds = _predict_with_threshold(output, normal_class_idx, threshold)
                 y_true = y_val.cpu().numpy()
                 y_pred = preds.cpu().numpy()
 
