@@ -159,7 +159,9 @@ def load_dataset_data(file, label_mapping=None, val_ratio=0.2, seed=42):
         df = df.sort_values("_timestamp", kind="mergesort").reset_index(drop=True)
         df = df.drop(columns=["_timestamp"])
 
-    drop_cols = [col for col in ["date", "label"] if col in df.columns]
+    # Keep `label` as an input feature when present; it contains strong binary
+    # supervisory information for normal-vs-attack classification.
+    drop_cols = [col for col in ["date"] if col in df.columns]
     if drop_cols:
         df = df.drop(drop_cols, axis=1)
 

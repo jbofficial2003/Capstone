@@ -271,8 +271,6 @@ def run_dataset_client(dataset_file, client_name=None, server_address="localhost
 
             optimizer = torch.optim.AdamW(model.parameters(), lr=LOCAL_LR, weight_decay=1e-4)
             loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
-            min_accuracy = float(config.get("target_accuracy_floor", TARGET_ACCURACY_FLOOR))
-
             best_state = None
             best_score = float("-inf")
             best_threshold = float(eval_state.get("attack_threshold", 0.5))
@@ -285,7 +283,7 @@ def run_dataset_client(dataset_file, client_name=None, server_address="localhost
                         val_logits,
                         y_val,
                         normal_class_idx,
-                        min_accuracy,
+                        -1.0,
                     )
                     val_preds = _predict_with_threshold(
                         val_logits,
@@ -295,23 +293,7 @@ def run_dataset_client(dataset_file, client_name=None, server_address="localhost
                     val_true = y_val.cpu().numpy()
 
                     accuracy = accuracy_score(val_true, val_preds)
-                    if normal_class_idx is None:
-                        score = float(accuracy)
-                    else:
-                        val_true_attack = (val_true != normal_class_idx).astype(int)
-                        val_pred_attack = (val_preds != normal_class_idx).astype(int)
-                        _, attack_recall, _, _ = precision_recall_fscore_support(
-                            val_true_attack,
-                            val_pred_attack,
-                            average="binary",
-                            zero_division=0,
-                        )
-
-                        # Maximize attack recall while respecting the requested accuracy floor.
-                        if accuracy >= min_accuracy:
-                            score = float(attack_recall + 0.1 * accuracy)
-                        else:
-                            score = float(accuracy - 1.0)
+                    score = float(accuracy)
 
                 model.train()
                 return score, threshold
