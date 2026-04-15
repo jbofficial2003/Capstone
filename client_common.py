@@ -8,7 +8,7 @@ import flwr as fl
 import numpy as np
 import torch
 from sklearn.metrics import accuracy_score, confusion_matrix, precision_recall_fscore_support
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 
 from model import SharedModel
 from utils import (
@@ -21,10 +21,17 @@ from utils import (
 
 
 RESULTS_DIR = "results"
-LOCAL_EPOCHS = 6
-LOCAL_LR = 3e-3
+LOCAL_EPOCHS = 12
+LOCAL_LR = 2e-3
 TARGET_ACCURACY_FLOOR = 0.90
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+GLOBAL_BLEND_DEFAULT = 0.10
+HARD_CLIENT_BLEND = {
+    "fridge": 0.0,
+    "garage": 0.0,
+    "modbus": 0.0,
+    "motion_light": 0.0,
+}
 
 
 def _predict_with_threshold(logits, normal_class_idx, threshold):
@@ -226,24 +233,27 @@ def run_dataset_client(dataset_file, client_name=None, server_address="localhost
     metrics_file = os.path.join(RESULTS_DIR, f"{resolved_name}_metrics.csv")
     predictions_file = os.path.join(RESULTS_DIR, f"{resolved_name}_predictions.csv")
     index_to_label = {idx: label for label, idx in label_mapping.items()}
-    eval_state = {"round": 0, "attack_threshold": 0.5}
+    eval_state = {"round": 0}
+    client_blend = float(HARD_CLIENT_BLEND.get(resolved_name, GLOBAL_BLEND_DEFAULT))
 
     X_val = X_val.to(DEVICE)
     y_val = y_val.to(DEVICE)
 
-    class_counts = torch.bincount(y_train, minlength=num_classes).float()
-    non_zero = class_counts > 0
-    class_weights = torch.ones(num_classes, dtype=torch.float32)
-    if non_zero.any():
-        inv = class_counts.sum() / (class_counts[non_zero] * non_zero.sum())
-        class_weights[non_zero] = torch.pow(inv, 0.7)
-    class_weights = (class_weights / class_weights.mean()).to(DEVICE)
-
     train_dataset = TensorDataset(X_train, y_train)
+    class_counts = torch.bincount(y_train, minlength=num_classes).float()
+    class_counts = torch.clamp(class_counts, min=1.0)
+    sample_weights = (1.0 / class_counts[y_train]).double()
+    sampler = WeightedRandomSampler(
+        weights=sample_weights,
+        num_samples=len(sample_weights),
+        replacement=True,
+    )
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=min(256, len(train_dataset)),
-        shuffle=True,
+        shuffle=False,
+        sampler=sampler,
         pin_memory=torch.cuda.is_available(),
     )
 
@@ -258,9 +268,13 @@ def run_dataset_client(dataset_file, client_name=None, server_address="localhost
 
             updated_state = {}
             for key, np_value in zip(shared_state.keys(), parameters):
-                updated_state[key] = torch.from_numpy(np_value).to(
+                global_tensor = torch.from_numpy(np_value).to(
                     dtype=shared_state[key].dtype,
                     device=shared_state[key].device,
+                )
+                local_tensor = shared_state[key]
+                updated_state[key] = (
+                    client_blend * global_tensor + (1.0 - client_blend) * local_tensor
                 )
 
             model.shared.load_state_dict(updated_state, strict=True)
@@ -270,33 +284,27 @@ def run_dataset_client(dataset_file, client_name=None, server_address="localhost
             model.train()
 
             optimizer = torch.optim.AdamW(model.parameters(), lr=LOCAL_LR, weight_decay=1e-4)
-            loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=LOCAL_EPOCHS,
+                eta_min=LOCAL_LR * 0.2,
+            )
+            loss_fn = torch.nn.CrossEntropyLoss(label_smoothing=0.02)
             best_state = None
             best_score = float("-inf")
-            best_threshold = float(eval_state.get("attack_threshold", 0.5))
 
             def _model_selection_score():
                 model.eval()
                 with torch.no_grad():
                     val_logits = model(X_val)
-                    threshold = _best_threshold_for_recall(
-                        val_logits,
-                        y_val,
-                        normal_class_idx,
-                        -1.0,
-                    )
-                    val_preds = _predict_with_threshold(
-                        val_logits,
-                        normal_class_idx,
-                        threshold,
-                    ).cpu().numpy()
+                    val_preds = torch.argmax(val_logits, dim=1).cpu().numpy()
                     val_true = y_val.cpu().numpy()
 
                     accuracy = accuracy_score(val_true, val_preds)
                     score = float(accuracy)
 
                 model.train()
-                return score, threshold
+                return score
 
             for _ in range(LOCAL_EPOCHS):
                 for xb, yb in train_loader:
@@ -308,25 +316,25 @@ def run_dataset_client(dataset_file, client_name=None, server_address="localhost
                     loss.backward()
                     optimizer.step()
 
-                epoch_score, epoch_threshold = _model_selection_score()
+                epoch_score = _model_selection_score()
                 if epoch_score > best_score:
                     best_score = epoch_score
-                    best_threshold = float(epoch_threshold)
                     best_state = {
                         key: value.detach().clone()
                         for key, value in model.state_dict().items()
                     }
 
+                scheduler.step()
+
             if best_state is not None:
                 model.load_state_dict(best_state, strict=True)
-                eval_state["attack_threshold"] = best_threshold
 
             return self.get_parameters(config), len(X_train), {}
 
         def evaluate(self, parameters, config):
             self.set_parameters(parameters)
             model.eval()
-            loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
+            loss_fn = torch.nn.CrossEntropyLoss()
 
             eval_state["round"] += 1
             round_number = int(config.get("server_round", eval_state["round"]))
@@ -334,8 +342,7 @@ def run_dataset_client(dataset_file, client_name=None, server_address="localhost
             with torch.no_grad():
                 output = model(X_val)
                 loss = loss_fn(output, y_val)
-                threshold = float(eval_state.get("attack_threshold", 0.5))
-                preds = _predict_with_threshold(output, normal_class_idx, threshold)
+                preds = torch.argmax(output, dim=1)
                 y_true = y_val.cpu().numpy()
                 y_pred = preds.cpu().numpy()
 

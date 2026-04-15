@@ -1,10 +1,16 @@
 {
   "label_to_index": {
-    "normal": 0,
-    "attack": 1
+    "backdoor": 0,
+    "ddos": 1,
+    "injection": 2,
+    "normal": 3,
+    "password": 4
   },
   "index_to_label": {
-    "0": "normal",
-    "1": "attack"
+    "0": "backdoor",
+    "1": "ddos",
+    "2": "injection",
+    "3": "normal",
+    "4": "password"
   }
 }
