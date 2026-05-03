@@ -242,7 +242,7 @@ def run_dataset_client(dataset_file, client_name=None, server_address="localhost
     train_dataset = TensorDataset(X_train, y_train)
     class_counts = torch.bincount(y_train, minlength=num_classes).float()
     class_counts = torch.clamp(class_counts, min=1.0)
-    weights = 1.0 / torch.sqrt(class_counts)
+    weights = 1.0 / (class_counts ** 0.3)
     weights = weights / weights.sum() * num_classes
     sample_weights = weights[y_train].double()
     sampler = WeightedRandomSampler(
