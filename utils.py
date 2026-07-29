@@ -187,6 +187,7 @@ def load_dataset_data(file, label_mapping=None, val_ratio=0.2, seed=42):
 
     df = df.fillna(0)
 
+    encoders = {}
     # Normalize all feature columns into numeric values.
     # - Numeric-like columns are converted directly.
     # - Mixed/string columns are encoded after string normalization.
@@ -199,6 +200,7 @@ def load_dataset_data(file, label_mapping=None, val_ratio=0.2, seed=42):
             df[col] = df[col].astype(str).str.strip()
             encoder = LabelEncoder()
             df[col] = encoder.fit_transform(df[col])
+            encoders[col] = encoder
 
     if label_mapping is None:
         type_encoder = LabelEncoder()
@@ -231,6 +233,22 @@ def load_dataset_data(file, label_mapping=None, val_ratio=0.2, seed=42):
     scaler = StandardScaler()
     X_train = torch.tensor(scaler.fit_transform(X_train), dtype=torch.float32)
     X_val = torch.tensor(scaler.transform(X_val), dtype=torch.float32)
+
+    # Save preprocessing structures and metadata for real-time inference
+    import pickle
+    client_name = os.path.splitext(os.path.basename(file))[0]
+    models_dir = os.path.join("results", "models")
+    os.makedirs(models_dir, exist_ok=True)
+    preprocessor_path = os.path.join(models_dir, f"{client_name}_preprocessor.pkl")
+    preprocessor_data = {
+        "scaler": scaler,
+        "encoders": encoders,
+        "feature_cols": X.columns.tolist(),
+        "input_size": X_train.shape[1],
+        "num_classes": num_classes
+    }
+    with open(preprocessor_path, "wb") as f:
+        pickle.dump(preprocessor_data, f)
 
     return X_train, y_train, X_val, y_val, num_classes
 

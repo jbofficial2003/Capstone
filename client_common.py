@@ -21,7 +21,7 @@ from utils import (
 
 
 RESULTS_DIR = "results"
-LOCAL_EPOCHS = 12
+LOCAL_EPOCHS = 5
 LOCAL_LR = 2e-3
 TARGET_ACCURACY_FLOOR = 0.90
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -413,3 +413,10 @@ def run_dataset_client(dataset_file, client_name=None, server_address="localhost
         server_address=server_address,
         client=DatasetClient(),
     )
+
+    # Save final trained model weights (local + shared)
+    models_dir = os.path.join(RESULTS_DIR, "models")
+    os.makedirs(models_dir, exist_ok=True)
+    model_path = os.path.join(models_dir, f"{resolved_name}_model.pth")
+    torch.save(model.state_dict(), model_path)
+    print(f"[CLIENT] Saved final model weights to: {model_path}")

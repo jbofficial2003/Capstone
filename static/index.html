@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SecurIoT Hub | Real-Time Federated Attack Detection</title>
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Remix Icon -->
+    <link href="https://cdn.jsdelivr.net/npm/remixicon@4.2.0/fonts/remixicon.css" rel="stylesheet">
+    <!-- Style -->
+    <link rel="stylesheet" href="style.css">
+    <!-- ChartJS -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Top Navbar -->
+        <header class="navbar">
+            <div class="nav-brand">
+                <div class="logo-icon">
+                    <i class="ri-shield-keyhole-line"></i>
+                </div>
+                <div class="logo-text">
+                    <h1>SecurIoT <span>Hub</span></h1>
+                    <p>Federated Intrusion Detection</p>
+                </div>
+            </div>
+            
+            <div class="nav-status">
+                <div class="status-indicator">
+                    <span class="pulse-dot green"></span>
+                    <span class="status-label">FL System Active</span>
+                </div>
+                <div class="ready-count-badge" id="active-devices-badge">
+                    <i class="ri-cpu-line"></i>
+                    <span>0/7 Models Loaded</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Workspace -->
+        <main class="main-layout">
+            <!-- Sidebar: IoT Device Selection -->
+            <section class="sidebar">
+                <div class="sidebar-header">
+                    <h2>IoT Nodes</h2>
+                    <p>Select target device to monitor</p>
+                </div>
+                <div class="device-list" id="device-list-container">
+                    <!-- Dynamic Device Cards injected here -->
+                    <div class="skeleton-card"></div>
+                    <div class="skeleton-card"></div>
+                    <div class="skeleton-card"></div>
+                </div>
+            </section>
+
+            <!-- Dashboard Content Area -->
+            <section class="dashboard-content">
+                <!-- Welcome State -->
+                <div class="card welcome-card" id="welcome-view">
+                    <div class="welcome-icon">
+                        <i class="ri-radar-line"></i>
+                    </div>
+                    <h2>Real-Time Security Threat Radar</h2>
+                    <p>Please select an active IoT device from the sidebar to initialize real-time security assessment and deploy the trained federated classifier.</p>
+                    <div class="welcome-hint">
+                        <i class="ri-info-card-line"></i>
+                        <span>Active device models are automatically synchronized from the Flower training checkpoints.</span>
+                    </div>
+                </div>
+
+                <!-- Active Monitoring Dashboard -->
+                <div class="monitoring-view hidden" id="monitoring-view">
+                    
+                    <!-- Device Info Header -->
+                    <div class="device-monitor-header">
+                        <div class="device-meta-title">
+                            <div class="device-large-icon" id="monitored-device-icon">
+                                <i class="ri-fridge-line"></i>
+                            </div>
+                            <div>
+                                <h2 id="monitored-device-name">Smart Refrigerator</h2>
+                                <p id="monitored-device-desc">Monitoring fridge temperature and cooling cycle logs.</p>
+                            </div>
+                        </div>
+                        <div class="model-badge green-glow" id="model-status-badge">
+                            <i class="ri-checkbox-circle-line"></i> Active Classifiers Deployed
+                        </div>
+                    </div>
+
+                    <!-- Quick Metrics Row -->
+                    <div class="metrics-row">
+                        <div class="metric-card">
+                            <span class="m-label">Live Threat Status</span>
+                            <div class="m-value normal-text" id="live-threat-status">
+                                <i class="ri-shield-check-line"></i> Normal
+                            </div>
+                            <span class="m-sub" id="live-threat-sub">No anomalous packets detected</span>
+                        </div>
+                        <div class="metric-card">
+                            <span class="m-label">Inference Confidence</span>
+                            <div class="m-value" id="live-confidence">99.8%</div>
+                            <div class="progress-bar-container">
+                                <div class="progress-bar-fill green-bg" id="live-confidence-bar" style="width: 99.8%"></div>
+                            </div>
+                        </div>
+                        <div class="metric-card">
+                            <span class="m-label">Simulation Packets</span>
+                            <div class="m-value" id="processed-packets-count">0</div>
+                            <span class="m-sub">Records streamed</span>
+                        </div>
+                        <div class="metric-card">
+                            <span class="m-label">Anomalous Activity</span>
+                            <div class="m-value warning-text" id="anomaly-ratio">0.0%</div>
+                            <span class="m-sub">Attack hit percentage</span>
+                        </div>
+                    </div>
+
+                    <!-- Layout: Controls and Chart -->
+                    <div class="dashboard-grid">
+                        
+                        <!-- Left Panel: Form / Simulation Controls -->
+                        <div class="panel-left">
+                            
+                            <!-- Mode Tabs -->
+                            <div class="tabs-container">
+                                <button class="tab-btn active" id="tab-simulate-btn">
+                                    <i class="ri-play-list-add-line"></i> Stream Simulation
+                                </button>
+                                <button class="tab-btn" id="tab-manual-btn">
+                                    <i class="ri-keyboard-line"></i> Manual Input Vector
+                                </button>
+                            </div>
+
+                            <!-- Tab 1: Stream Simulation Panel -->
+                            <div class="tab-pane active" id="pane-simulate">
+                                <div class="card pane-card">
+                                    <h3>CSV Dataset Stream Controller</h3>
+                                    <p>Simulate production stream by feeding events directly from the preprocessed device datasets chronological test sets.</p>
+                                    
+                                    <div class="simulator-controls">
+                                        <div class="control-row">
+                                            <div class="btn-group">
+                                                <button class="btn btn-primary" id="btn-start-stream">
+                                                    <i class="ri-play-fill"></i> Start Stream
+                                                </button>
+                                                <button class="btn btn-secondary" id="btn-pause-stream" disabled>
+                                                    <i class="ri-pause-fill"></i> Pause
+                                                </button>
+                                                <button class="btn btn-danger" id="btn-reset-stream">
+                                                    <i class="ri-refresh-line"></i> Reset
+                                                </button>
+                                            </div>
+                                        </div>
+                                        
+                                        <div class="control-row inline-settings">
+                                            <div class="control-group">
+                                                <label for="stream-speed">Stream Interval</label>
+                                                <select id="stream-speed">
+                                                    <option value="1500">Slow (1.5s)</option>
+                                                    <option value="800" selected>Normal (0.8s)</option>
+                                                    <option value="300">Fast (0.3s)</option>
+                                                    <option value="100">Super Fast (0.1s)</option>
+                                                </select>
+                                            </div>
+                                            <div class="control-group">
+                                                <label for="threshold-slider">Anomaly Threshold</label>
+                                                <div class="slider-wrapper">
+                                                    <input type="range" id="threshold-slider" min="10" max="90" value="50">
+                                                    <span id="threshold-val">50%</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div class="simulation-guide">
+                                        <i class="ri-information-line"></i>
+                                        <span>Since the neural network model expects <strong>time-series lag context</strong>, the system maintains a running window of the last 4 readings to build the feature vector.</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Tab 2: Manual Input Vector Panel -->
+                            <div class="tab-pane hidden" id="pane-manual">
+                                <div class="card pane-card">
+                                    <h3>Inject Custom Package</h3>
+                                    <p>Input raw attributes directly into the feature pipeline to test custom attack vectors or edge cases.</p>
+                                    
+                                    <form id="manual-vector-form">
+                                        <!-- Dynamic inputs will be placed here -->
+                                        <div id="dynamic-inputs-container"></div>
+                                        
+                                        <div class="form-actions">
+                                            <button type="submit" class="btn btn-primary btn-block">
+                                                <i class="ri-shield-flash-line"></i> Evaluate Package
+                                            </button>
+                                        </div>
+                                    </form>
+                                </div>
+                            </div>
+
+                        </div>
+
+                        <!-- Right Panel: Dynamic Charts & Distribution -->
+                        <div class="panel-right">
+                            <div class="card chart-card">
+                                <div class="chart-header">
+                                    <h3>Threat Type Distribution</h3>
+                                    <span class="badge">Live Stats</span>
+                                </div>
+                                <div class="chart-container">
+                                    <canvas id="threat-distribution-chart"></canvas>
+                                </div>
+                            </div>
+                        </div>
+
+                    </div>
+
+                    <!-- Section: Live Event Log Table -->
+                    <div class="card log-card">
+                        <div class="log-header">
+                            <div class="log-title">
+                                <h3>Network Package Log</h3>
+                                <p>Live packet captures and classifier labels</p>
+                            </div>
+                            <button class="btn btn-small btn-secondary" id="btn-clear-log">
+                                <i class="ri-delete-bin-line"></i> Clear Logs
+                            </button>
+                        </div>
+                        <div class="log-table-container">
+                            <table class="log-table">
+                                <thead>
+                                    <tr id="log-table-headers">
+                                        <th>Timestamp</th>
+                                        <th>Device Attributes</th>
+                                        <th>Ground Truth</th>
+                                        <th>Inference Label</th>
+                                        <th>Confidence</th>
+                                        <th>Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="log-table-body">
+                                    <!-- Injected dynamically -->
+                                    <tr class="placeholder-row">
+                                        <td colspan="6">No events captured in this session. Start the stream or inject manual vectors to display data.</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                </div>
+
+            </section>
+        </main>
+    </div>
+    <!-- Script -->
+    <script src="script.js"></script>
+</body>
+</html>
